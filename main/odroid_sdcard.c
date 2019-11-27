@@ -19,7 +19,7 @@
 #define SD_PIN_NUM_MISO 19
 #define SD_PIN_NUM_MOSI 23
 #define SD_PIN_NUM_CLK  18
-#define SD_PIN_NUM_CS 22
+#define SD_PIN_NUM_CS 4
 
 
 static bool isOpen = false;

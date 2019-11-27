@@ -5,7 +5,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
-
+#include "driver/uart.h"
 
 static volatile bool input_task_is_running = false;
 static volatile odroid_gamepad_state gamepad_state;
@@ -14,59 +14,19 @@ static uint8_t debounce[ODROID_INPUT_MAX];
 static volatile bool input_gamepad_initialized = false;
 static SemaphoreHandle_t xSemaphore;
 
+// Setup UART buffered IO with event queue
+const int uart_buffer_size = (1024 * 2);
+QueueHandle_t uart_queue;
 
-
-
-odroid_gamepad_state input_read_raw()
-{
-    odroid_gamepad_state state = {0};
-
-    int joyX = adc1_get_raw(ODROID_GAMEPAD_IO_X);
-    int joyY = adc1_get_raw(ODROID_GAMEPAD_IO_Y);
-
-    if (joyX > 2048 + 1024)
-    {
-        state.values[ODROID_INPUT_LEFT] = 1;
-        state.values[ODROID_INPUT_RIGHT] = 0;
-    }
-    else if (joyX > 1024)
-    {
-        state.values[ODROID_INPUT_LEFT] = 0;
-        state.values[ODROID_INPUT_RIGHT] = 1;
-    }
-    else
-    {
-        state.values[ODROID_INPUT_LEFT] = 0;
-        state.values[ODROID_INPUT_RIGHT] = 0;
-    }
-
-    if (joyY > 2048 + 1024)
-    {
-        state.values[ODROID_INPUT_UP] = 1;
-        state.values[ODROID_INPUT_DOWN] = 0;
-    }
-    else if (joyY > 1024)
-    {
-        state.values[ODROID_INPUT_UP] = 0;
-        state.values[ODROID_INPUT_DOWN] = 1;
-    }
-    else
-    {
-        state.values[ODROID_INPUT_UP] = 0;
-        state.values[ODROID_INPUT_DOWN] = 0;
-    }
-
-    state.values[ODROID_INPUT_SELECT] = !(gpio_get_level(ODROID_GAMEPAD_IO_SELECT));
-    state.values[ODROID_INPUT_START] = !(gpio_get_level(ODROID_GAMEPAD_IO_START));
-
-    state.values[ODROID_INPUT_A] = !(gpio_get_level(ODROID_GAMEPAD_IO_A));
-    state.values[ODROID_INPUT_B] = !(gpio_get_level(ODROID_GAMEPAD_IO_B));
-
-    state.values[ODROID_INPUT_MENU] = !(gpio_get_level(ODROID_GAMEPAD_IO_MENU));
-    state.values[ODROID_INPUT_VOLUME] = !(gpio_get_level(ODROID_GAMEPAD_IO_VOLUME));
-
-    return state;
-}
+const int uart_num = UART_NUM_0;
+uart_config_t uart_config = {
+    .baud_rate = 115200,
+    .data_bits = UART_DATA_8_BITS,
+    .parity = UART_PARITY_DISABLE,
+    .stop_bits = UART_STOP_BITS_1,
+    .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
+    .rx_flow_ctrl_thresh = 0,
+};
 
 void input_read(odroid_gamepad_state* out_state)
 {
@@ -83,45 +43,70 @@ static void input_task(void *arg)
 {
     input_task_is_running = true;
 
-    // Initialize state
-    for(int i = 0; i < ODROID_INPUT_MAX; ++i)
-    {
-        debounce[i] = 0xff;
-    }
-
+    int rx_state = 0;
+    uint8_t st = 1;
 
     while(input_task_is_running)
     {
-        // Shift current values
-        for(int i = 0; i < ODROID_INPUT_MAX; ++i)
+
+	// Read data from UART.
+	uint8_t data[128];
+	int length = 0;
+	ESP_ERROR_CHECK(uart_get_buffered_data_len(uart_num, (size_t*)&length));
+	length = uart_read_bytes(uart_num, data, length, 100);
+
+	for(int i = 0; i < length; i++)
+	{
+		if(data[i] == '+') 
 		{
-			debounce[i] <<= 1;
+			rx_state = 0;
 		}
-
-        // Read hardware
-        odroid_gamepad_state state = input_read_raw();
-
-        // Debounce
-        xSemaphoreTake(xSemaphore, portMAX_DELAY);
-
-        for(int i = 0; i < ODROID_INPUT_MAX; ++i)
-		{
-            debounce[i] |= state.values[i] ? 1 : 0;
-            uint8_t val = debounce[i] & 0x03; //0x0f;
-            switch (val) {
-                case 0x00:
-                    gamepad_state.values[i] = 0;
-                    break;
-
-                case 0x03: //0x0f:
-                    gamepad_state.values[i] = 1;
-                    break;
-
-                default:
-                    // ignore
-                    break;
-            }
+		else
+		{		
+			switch(rx_state)
+			{
+				case 0:
+					if(data[i] == '$') rx_state = 5;
+				break;
+				case 5:
+					if(data[i] == 'D') rx_state = 10;
+					else if(data[i] == 'U') rx_state = 11;
+				break;
+				case 10:
+					st = 1;
+					switch(data[i])
+					{
+						case '9': gamepad_state.values[ODROID_INPUT_UP] = st; break;
+						case 'C': gamepad_state.values[ODROID_INPUT_LEFT] = st; break;
+						case 'D': gamepad_state.values[ODROID_INPUT_DOWN] = st; break;
+						case 'E': gamepad_state.values[ODROID_INPUT_RIGHT] = st; break;
+						case '4': gamepad_state.values[ODROID_INPUT_MENU] = st; break;
+						case '5': gamepad_state.values[ODROID_INPUT_VOLUME] = st; break;
+						case '7': gamepad_state.values[ODROID_INPUT_SELECT] = st; break;
+						case 'K': gamepad_state.values[ODROID_INPUT_START] = st; break;
+						case 'B': gamepad_state.values[ODROID_INPUT_B] = st; break;
+						case 'L': gamepad_state.values[ODROID_INPUT_A] = st; break;
+					}
+				break;
+				case 11:
+					st = 0;
+					switch(data[i])
+					{
+						case '9': gamepad_state.values[ODROID_INPUT_UP] = st; break;
+						case 'C': gamepad_state.values[ODROID_INPUT_LEFT] = st; break;
+						case 'D': gamepad_state.values[ODROID_INPUT_DOWN] = st; break;
+						case 'E': gamepad_state.values[ODROID_INPUT_RIGHT] = st; break;
+						case '4': gamepad_state.values[ODROID_INPUT_MENU] = st; break;
+						case '5': gamepad_state.values[ODROID_INPUT_VOLUME] = st; break;
+						case '7': gamepad_state.values[ODROID_INPUT_SELECT] = st; break;
+						case 'K': gamepad_state.values[ODROID_INPUT_START] = st; break;
+						case 'B': gamepad_state.values[ODROID_INPUT_B] = st; break;
+						case 'L': gamepad_state.values[ODROID_INPUT_A] = st; break;
+					}
+				break;
+			}
 		}
+	}
 
         previous_gamepad_state = gamepad_state;
 
@@ -142,6 +127,7 @@ static void input_task(void *arg)
     while (1) { vTaskDelay(1);}
 }
 
+
 void input_init()
 {
     xSemaphore = xSemaphoreCreateMutex();
@@ -152,30 +138,17 @@ void input_init()
         abort();
     }
 
-	gpio_set_direction(ODROID_GAMEPAD_IO_SELECT, GPIO_MODE_INPUT);
-	gpio_set_pull_mode(ODROID_GAMEPAD_IO_SELECT, GPIO_PULLUP_ONLY);
-
-	gpio_set_direction(ODROID_GAMEPAD_IO_START, GPIO_MODE_INPUT);
-
-	gpio_set_direction(ODROID_GAMEPAD_IO_A, GPIO_MODE_INPUT);
-	gpio_set_pull_mode(ODROID_GAMEPAD_IO_A, GPIO_PULLUP_ONLY);
-
-    gpio_set_direction(ODROID_GAMEPAD_IO_B, GPIO_MODE_INPUT);
-	gpio_set_pull_mode(ODROID_GAMEPAD_IO_B, GPIO_PULLUP_ONLY);
-
-	adc1_config_width(ADC_WIDTH_12Bit);
-    adc1_config_channel_atten(ODROID_GAMEPAD_IO_X, ADC_ATTEN_11db);
-	adc1_config_channel_atten(ODROID_GAMEPAD_IO_Y, ADC_ATTEN_11db);
-
-	gpio_set_direction(ODROID_GAMEPAD_IO_MENU, GPIO_MODE_INPUT);
-	gpio_set_pull_mode(ODROID_GAMEPAD_IO_MENU, GPIO_PULLUP_ONLY);
-
-	gpio_set_direction(ODROID_GAMEPAD_IO_VOLUME, GPIO_MODE_INPUT);
+    // Configure UART parameters
+    ESP_ERROR_CHECK(uart_param_config(uart_num, &uart_config));
+    ESP_ERROR_CHECK(uart_set_pin(uart_num, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE, 18, 19));
+    // Install UART driver using an event queue here
+    ESP_ERROR_CHECK(uart_driver_install(uart_num, uart_buffer_size, \
+                                        uart_buffer_size, 10, &uart_queue, 0));
 
     input_gamepad_initialized = true;
 
     // Start background polling
     xTaskCreatePinnedToCore(&input_task, "input_task", 1024 * 2, NULL, 5, NULL, 1);
 
-  	printf("%s: done.\n", __func__);
+    printf("%s: done.\n", __func__);
 }
