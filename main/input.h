@@ -37,4 +37,6 @@ typedef struct
 
 void input_init();
 void input_read(odroid_gamepad_state* out_state);
+odroid_gamepad_state input_read_raw();
+
 

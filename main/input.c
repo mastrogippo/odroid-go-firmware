@@ -24,9 +24,13 @@ uart_config_t uart_config = {
     .data_bits = UART_DATA_8_BITS,
     .parity = UART_PARITY_DISABLE,
     .stop_bits = UART_STOP_BITS_1,
-    .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
-    .rx_flow_ctrl_thresh = 0,
+    .flow_ctrl = UART_HW_FLOWCTRL_DISABLE
 };
+
+odroid_gamepad_state input_read_raw()
+{
+	return gamepad_state;
+}
 
 void input_read(odroid_gamepad_state* out_state)
 {
@@ -45,64 +49,60 @@ static void input_task(void *arg)
 
     int rx_state = 0;
     uint8_t st = 1;
-
-    while(input_task_is_running)
-    {
+    uint32_t keyb = 0;    
 
 	// Read data from UART.
 	uint8_t data[128];
 	int length = 0;
+
+    while(input_task_is_running)
+    {
+
 	ESP_ERROR_CHECK(uart_get_buffered_data_len(uart_num, (size_t*)&length));
 	length = uart_read_bytes(uart_num, data, length, 100);
 
 	for(int i = 0; i < length; i++)
 	{
-		if(data[i] == '+') 
+		/*if(data[i] == 0xFE) 
 		{
 			rx_state = 0;
 		}
-		else
+		else*/
 		{		
 			switch(rx_state)
 			{
 				case 0:
-					if(data[i] == '$') rx_state = 5;
+					if(data[i] == 0xFC) rx_state = 5;
 				break;
 				case 5:
-					if(data[i] == 'D') rx_state = 10;
-					else if(data[i] == 'U') rx_state = 11;
+					keyb = data[i];
+					keyb <<= 8;
+					rx_state = 10;
 				break;
 				case 10:
-					st = 1;
-					switch(data[i])
-					{
-						case '9': gamepad_state.values[ODROID_INPUT_UP] = st; break;
-						case 'C': gamepad_state.values[ODROID_INPUT_LEFT] = st; break;
-						case 'D': gamepad_state.values[ODROID_INPUT_DOWN] = st; break;
-						case 'E': gamepad_state.values[ODROID_INPUT_RIGHT] = st; break;
-						case '4': gamepad_state.values[ODROID_INPUT_MENU] = st; break;
-						case '5': gamepad_state.values[ODROID_INPUT_VOLUME] = st; break;
-						case '7': gamepad_state.values[ODROID_INPUT_SELECT] = st; break;
-						case 'K': gamepad_state.values[ODROID_INPUT_START] = st; break;
-						case 'B': gamepad_state.values[ODROID_INPUT_B] = st; break;
-						case 'L': gamepad_state.values[ODROID_INPUT_A] = st; break;
-					}
+					keyb += data[i];
+					keyb <<= 8;
+					rx_state = 15;
 				break;
-				case 11:
-					st = 0;
-					switch(data[i])
+				case 15:
+					keyb += data[i];
+					rx_state = 20;
+				break;
+				case 20:
+					if(data[i] == 0xFE)
 					{
-						case '9': gamepad_state.values[ODROID_INPUT_UP] = st; break;
-						case 'C': gamepad_state.values[ODROID_INPUT_LEFT] = st; break;
-						case 'D': gamepad_state.values[ODROID_INPUT_DOWN] = st; break;
-						case 'E': gamepad_state.values[ODROID_INPUT_RIGHT] = st; break;
-						case '4': gamepad_state.values[ODROID_INPUT_MENU] = st; break;
-						case '5': gamepad_state.values[ODROID_INPUT_VOLUME] = st; break;
-						case '7': gamepad_state.values[ODROID_INPUT_SELECT] = st; break;
-						case 'K': gamepad_state.values[ODROID_INPUT_START] = st; break;
-						case 'B': gamepad_state.values[ODROID_INPUT_B] = st; break;
-						case 'L': gamepad_state.values[ODROID_INPUT_A] = st; break;
+						if(keyb & 0x00002000) gamepad_state.values[ODROID_INPUT_UP] = 1; else gamepad_state.values[ODROID_INPUT_UP] = 0;
+						if(keyb & 0x00000100) gamepad_state.values[ODROID_INPUT_LEFT] = 1; else gamepad_state.values[ODROID_INPUT_LEFT] = 0;
+						if(keyb & 0x00000200) gamepad_state.values[ODROID_INPUT_DOWN] = 1; else gamepad_state.values[ODROID_INPUT_DOWN] = 0;
+						if(keyb & 0x00000400) gamepad_state.values[ODROID_INPUT_RIGHT] = 1; else gamepad_state.values[ODROID_INPUT_RIGHT] = 0;
+						if(keyb & 0x00010000) gamepad_state.values[ODROID_INPUT_MENU] = 1; else gamepad_state.values[ODROID_INPUT_MENU] = 0;
+						if(keyb & 0x00020000) gamepad_state.values[ODROID_INPUT_VOLUME] = 1; else gamepad_state.values[ODROID_INPUT_VOLUME] = 0;
+						if(keyb & 0x00080000) gamepad_state.values[ODROID_INPUT_SELECT] = 1; else gamepad_state.values[ODROID_INPUT_SELECT] = 0;
+						if(keyb & 0x00000004) gamepad_state.values[ODROID_INPUT_START] = 1; else gamepad_state.values[ODROID_INPUT_START] = 0;
+						if(keyb & 0x00008000) gamepad_state.values[ODROID_INPUT_B] = 1; else gamepad_state.values[ODROID_INPUT_B] = 0;
+						if(keyb & 0x00000002) gamepad_state.values[ODROID_INPUT_A] = 1; else gamepad_state.values[ODROID_INPUT_A] = 0;
 					}
+					rx_state = 0;
 				break;
 			}
 		}
